@@ -1,0 +1,12 @@
+# challenge data and generated artefacts are never committed
+dataset/
+work/
+output/
+*.parquet
+*.tsv
+*.pkl
+*.log
+*.prof
+__pycache__/
+*.pyc
+.venv/
