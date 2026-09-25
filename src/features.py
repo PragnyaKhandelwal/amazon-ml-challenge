@@ -14,6 +14,8 @@ from rapidfuzz.process import cpdist
 REC_COLS = ["rid", "cc", "nm", "core", "alt", "legal", "is_dom", "sk", "nsp", "ntok", "first",
             "acro", "is_indic", "ad", "adw", "nums", "postal", "hn", "business_name",
             "business_address", "src", "f_nsp1", "f_nspa", "f_adr1", "f_adra"]
+# columns read from {split}_recs.parquet (cc and the f_* frequencies are derived later)
+PARQUET_COLS = [c for c in REC_COLS if c != "cc" and not c.startswith("f_")] + ["entity_id", "country_n"]
 
 
 def add_frequencies(recs):
@@ -130,7 +132,7 @@ def pair_features(pairs, recs, idfs):
     """pairs: frame with t_rid, s1_rid + blocking columns. Returns feature frame (same order)."""
     pairs = pairs.with_row_index("pid")
     need = pl.concat([pairs["t_rid"], pairs["s1_rid"]]).unique()
-    R = (recs.filter(pl.col("rid").is_in(need.implode())).select(REC_COLS)
+    R = (recs.join(need.to_frame("rid"), on="rid", how="semi").select(REC_COLS)
              .with_columns(core_srt=_sorted_tokens("core"), ad_srt=_sorted_tokens("ad"),
                            adw_srt=_sorted_tokens("adw"),
                            name_low=pl.col("business_name").str.to_lowercase(),
@@ -217,16 +219,22 @@ CTX_COLS = ["n_best", "n_ratio", "a_tset", "a_idf_jac", "n_idf_jac", "bscore", "
 
 def add_context(X, cols=CTX_COLS, group="t_rid"):
     """How a pair compares to the competing candidates of the same group
-    (group = t_rid: other S1 entities for this record; s1_rid: other records for this S1)."""
+    (group = t_rid: other S1 entities for this record; s1_rid: other records for this S1).
+    Computed in two passes so no window expression is nested inside an aggregation
+    (works on old and new polars)."""
     tag = "t" if group == "t_rid" else "s"
+    X = X.with_columns([pl.col(c).cast(pl.Float32).max().over(group).alias(f"_mx_{c}") for c in cols])
+    X = X.with_columns(
+        [(pl.col(c) >= pl.col(f"_mx_{c}")).cast(pl.Int32).sum().over(group).alias(f"_nm_{c}") for c in cols] +
+        [pl.when(pl.col(c) < pl.col(f"_mx_{c}")).then(pl.col(c).cast(pl.Float32)).otherwise(None)
+           .max().over(group).fill_null(-1.0).alias(f"_bl_{c}") for c in cols])
     exprs = []
     for c in cols:
-        v = pl.col(c).cast(pl.Float32)
-        mx = v.max().over(group)
-        n_at_max = (v >= mx).sum().over(group)
-        below = pl.when(v < mx).then(v).otherwise(None).max().over(group).fill_null(-1.0)
-        other = pl.when(v < mx).then(mx).when(n_at_max > 1).then(mx).otherwise(below)
+        v, mx = pl.col(c).cast(pl.Float32), pl.col(f"_mx_{c}")
+        other = (pl.when(v < mx).then(mx).when(pl.col(f"_nm_{c}") > 1).then(mx)
+                   .otherwise(pl.col(f"_bl_{c}")))
         exprs += [(v - other).alias(f"cx{tag}_{c}_gap"), (mx - v).alias(f"cx{tag}_{c}_dmax"),
                   v.rank("min", descending=True).over(group).cast(pl.Int16).alias(f"cx{tag}_{c}_rk")]
-    exprs.append(pl.len().over(group).cast(pl.Int16).alias(f"cx{tag}_n"))
-    return X.with_columns(exprs)
+    exprs.append(pl.col(group).count().over(group).cast(pl.Int16).alias(f"cx{tag}_n"))
+    X = X.with_columns(exprs)
+    return X.drop([f"{p}_{c}" for c in cols for p in ("_mx", "_nm", "_bl")])

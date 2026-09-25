@@ -10,7 +10,7 @@ import polars as pl
 
 import config as C
 from evaluate import Decider
-from features import REC_COLS
+from features import PARQUET_COLS
 from io_utils import write_outputs
 from model import iter_parts, predict, s1_context
 from pairs import build_features, prune
@@ -26,7 +26,7 @@ def log(m):
 def main(stage="all"):
     t0 = time.time()
     recs = with_country_code(pl.read_parquet(os.path.join(W, "test_recs.parquet"),
-                                             columns=[c for c in REC_COLS if c != "cc"] + ["entity_id", "country_n"]))
+                                             columns=PARQUET_COLS))
     ids = recs.select("rid", "entity_id", "src")
     if stage in ("all", "features"):
         cands = prune(pl.read_parquet(os.path.join(W, "test_cands.parquet")))

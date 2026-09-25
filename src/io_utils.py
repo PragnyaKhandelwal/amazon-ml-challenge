@@ -8,7 +8,7 @@ COLS = ["entity_id", "business_name", "business_address", "country"]
 
 def read_tsv(path):
     # quote_char=None: names/addresses contain stray quotes that must be kept literally
-    df = pl.read_csv(path, separator="\t", quote_char=None, infer_schema=False)
+    df = pl.read_csv(path, separator="\t", quote_char=None, infer_schema_length=0)
     df = df.rename({c: c.strip() for c in df.columns})
     return df.with_columns(pl.col(c).fill_null("").str.strip_chars() for c in df.columns)
 

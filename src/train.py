@@ -14,7 +14,7 @@ import polars as pl
 
 import config as C
 from evaluate import macro_f05, tune_decider
-from features import REC_COLS
+from features import PARQUET_COLS
 from model import feature_names, iter_parts, predict, s1_context, train
 from pairs import build_features, prune
 from run_blocking import gt_pairs, with_country_code
@@ -35,7 +35,7 @@ def s1_folds(recs):
 def main(stage="all", train_frac=0.25, rounds=1500):
     t0 = time.time()
     recs = with_country_code(pl.read_parquet(os.path.join(W, "train_recs.parquet"),
-                                             columns=[c for c in REC_COLS if c != "cc"] + ["entity_id", "country_n"]))
+                                             columns=PARQUET_COLS))
     gt = gt_pairs(recs)
     folds = s1_folds(recs)
     if stage in ("all", "features"):
