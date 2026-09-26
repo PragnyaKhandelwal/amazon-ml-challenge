@@ -9,6 +9,7 @@ import os
 import sys
 import time
 
+import lightgbm as lgb
 import numpy as np
 import polars as pl
 
@@ -46,25 +47,31 @@ def main(stage="all", train_frac=0.25, rounds=1500):
         s1_context(W, "train")
         log(f"features done ({time.time() - t0:.0f}s)")
     del recs
-    # ---------------- training sample (non-validation S1 folds, subsample of targets)
-    lab = gt.with_columns(y=pl.lit(1, pl.Int8))
-    tr_parts, feats = [], None
-    for X in iter_parts(W, "train"):
-        X = (X.join(lab, on=["s1_rid", "t_rid"], how="left").with_columns(pl.col("y").fill_null(0))
-              .join(folds, on="s1_rid", how="left"))
-        feats = feats or feature_names(X)
-        keep = (pl.col("fold") != C.VALID_FOLD) & ((pl.col("t_rid").hash(seed=3) % 1000) < train_frac * 1000)
-        tr_parts.append(X.filter(keep))
-    tr = pl.concat(tr_parts)
-    del tr_parts
-    va = tr.filter((pl.col("t_rid").hash(seed=5) % 20) == 0)
-    tr = tr.filter((pl.col("t_rid").hash(seed=5) % 20) != 0)
-    log(f"train rows {tr.height:,} (pos {tr['y'].mean():.3f}), early-stop rows {va.height:,}, "
-        f"{len(feats)} features ({time.time() - t0:.0f}s)")
-    m = train(tr, feats, rounds=rounds, valid=va)
-    del tr, va
-    m.save_model(os.path.join(W, "model_stage1.txt"))
-    log(f"model trained, best iter {m.best_iteration} ({time.time() - t0:.0f}s)")
+    if stage == "tune":
+        # reuse an already trained model_stage1.txt: only predict + tune the decision rule
+        m = lgb.Booster(model_file=os.path.join(W, "model_stage1.txt"))
+        feats = m.feature_name()
+        log(f"loaded model_stage1.txt: {len(feats)} features, {m.num_trees()} trees")
+    else:
+        # ---------------- training sample (non-validation S1 folds, subsample of targets)
+        lab = gt.with_columns(y=pl.lit(1, pl.Int8))
+        tr_parts, feats = [], None
+        for X in iter_parts(W, "train"):
+            X = (X.join(lab, on=["s1_rid", "t_rid"], how="left").with_columns(pl.col("y").fill_null(0))
+                  .join(folds, on="s1_rid", how="left"))
+            feats = feats or feature_names(X)
+            keep = (pl.col("fold") != C.VALID_FOLD) & ((pl.col("t_rid").hash(seed=3) % 1000) < train_frac * 1000)
+            tr_parts.append(X.filter(keep))
+        tr = pl.concat(tr_parts)
+        del tr_parts
+        va = tr.filter((pl.col("t_rid").hash(seed=5) % 20) == 0)
+        tr = tr.filter((pl.col("t_rid").hash(seed=5) % 20) != 0)
+        log(f"train rows {tr.height:,} (pos {tr['y'].mean():.3f}), early-stop rows {va.height:,}, "
+            f"{len(feats)} features ({time.time() - t0:.0f}s)")
+        m = train(tr, feats, rounds=rounds, valid=va)
+        del tr, va
+        m.save_model(os.path.join(W, "model_stage1.txt"))
+        log(f"model trained, best iter {m.best_iteration} ({time.time() - t0:.0f}s)")
     # ---------------- predictions on all train pairs (used for validation tuning)
     preds = []
     for X in iter_parts(W, "train"):
